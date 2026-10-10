@@ -1,0 +1,6 @@
+deps/
+work/
+__pycache__/
+*.pyc
+*.tmp.mdl
+*.blend1

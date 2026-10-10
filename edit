@@ -1,0 +1,27 @@
+#!/bin/bash
+# Open the bundled Blender (GUI) with the Warcraft 3 addon, optionally loading a model.
+#
+#   edit                      # empty Blender, addon enabled
+#   edit model.blend          # open a scene (e.g. one saved with fbx2mdx --save-blend)
+#   edit model.fbx|.glb|.mdx  # start a new scene and import the file
+#
+# Export with File > Export > Warcraft 3 MDX (.mdx). --standalone: use deps/ only.
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+source "$here/env.sh"
+fbx2mdx_take_flags "$@"
+set -- ${fbx2mdx_args[@]+"${fbx2mdx_args[@]}"}
+fbx2mdx_resolve
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+fi
+if [ $# -eq 0 ]; then
+    exec "$blender" --addons export_mdl
+fi
+file="$(readlink -f "$1")"
+case "${file,,}" in
+    *.blend) exec "$blender" --addons export_mdl "$file" ;;
+    *) exec "$blender" --addons export_mdl --python "$here/edit_open.py" -- "$file" ;;
+esac

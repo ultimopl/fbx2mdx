@@ -1,0 +1,67 @@
+#!/bin/bash
+# Convert FBX/glTF/OBJ/DAE/blend/MDL/MDX models to Warcraft 3 MDX (or MDL) on Linux.
+#
+#   fbx2mdx INPUT [OUTPUT] [options]
+#   fbx2mdx DIR [OUTDIR] [options]          # every model file in DIR
+#
+# OUTPUT defaults to INPUT with .mdx; give a .mdl path to keep the text format.
+# --standalone uses only the portable dependencies in deps/ (see setup.sh).
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+source "$here/env.sh"
+fbx2mdx_take_flags "$@"
+set -- ${fbx2mdx_args[@]+"${fbx2mdx_args[@]}"}
+fbx2mdx_resolve
+
+run_convert() {
+    "$blender" -b --factory-startup --python "$here/convert.py" -- "$@"
+}
+
+if [ $# -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    run_convert --help 2>/dev/null | sed -n '/^usage:/,$p'
+    exit 0
+fi
+
+input="$1"; shift
+output=""
+if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
+    output="$1"; shift
+fi
+
+convert_one() {  # in out [opts...]
+    local in="$1" out="$2"; shift 2
+    local ext="${out##*.}"
+    local mdl="$out"
+    [ "${ext,,}" = "mdx" ] && mdl="${out%.*}.tmp.mdl"
+    mkdir -p "$(dirname "$out")"
+    local log
+    log="$(mktemp)"
+    if ! run_convert "$in" "$mdl" "$@" >"$log" 2>&1 || [ ! -f "$mdl" ]; then
+        grep -E "^\[fbx2mdx\]|Error|error:|Traceback|^  File" "$log" >&2 || tail -20 "$log" >&2
+        rm -f "$log" "$mdl"
+        echo "fbx2mdx: FAILED $in" >&2
+        return 1
+    fi
+    grep -E "^\[fbx2mdx\]" "$log" | grep -v "^\[fbx2mdx\] imported" || true
+    rm -f "$log"
+    if [ "$mdl" != "$out" ]; then
+        node "$here/mdl2mdx.js" "$mdl" "$out" && rm -f "$mdl"
+    fi
+}
+
+if [ -d "$input" ]; then
+    outdir="${output:-$input}"
+    status=0
+    shopt -s nullglob nocaseglob
+    for f in "$input"/*.{fbx,glb,gltf,obj,dae}; do
+        stem="$(basename "${f%.*}")"
+        convert_one "$f" "$outdir/$stem.mdx" "$@" || status=1
+    done
+    exit $status
+fi
+
+[ -f "$input" ] || { echo "fbx2mdx: no such file: $input" >&2; exit 1; }
+[ -n "$output" ] || output="${input%.*}.mdx"
+convert_one "$input" "$output" "$@"
