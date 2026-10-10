@@ -21,6 +21,8 @@ There is no unit test suite. Verify changes with `tests/check.sh` on a rigged, a
 
 The intermediate files land in `work/test/`. Don't point `check.sh` at an input inside `work/test/`, because it overwrites its own source.
 
+`check.sh` calls `convert.py` and `mdl2mdx.js` directly, so it doesn't exercise the `fbx2mdx` bash wrapper (batch mode, output naming, `--anim` handling). Test wrapper changes by running `./fbx2mdx` itself.
+
 ## Pipeline
 
 1. **`fbx2mdx` / `edit`** (bash) source `env.sh`. It resolves Blender ≥ 5, Node, and mdx-m3-viewer: system first, then `deps/`. If one is missing from both, it prompts to run `setup.sh`. `--standalone` means `deps/` only.
@@ -28,9 +30,22 @@ The intermediate files land in `work/test/`. Don't point `check.sh` at an input 
    - imports the file;
    - removes object-level animation, which would override the normalization;
    - normalizes the model to `--height` (default 120), rotates it 90° about Z so it faces +X, and grounds it at Z=0;
-   - assigns WC3 texture paths into each material's `mdl_layers`;
+   - produces textures (`textures.py`) and assigns their WC3 paths into each material's `mdl_layers`. Materials that already have layers are skipped. `textures.classify` follows the shader's Base Color input:
+     - an image becomes that image's pixels, converted;
+     - a flat color, or vertex colors that are uniform per face, go into a `<out>_colors.blp` palette atlas, with UVs snapped to the cell centers;
+     - everything else is baked, Emission → Cycles EMIT at 1 sample, onto a smart-projected `fbx2mdx` UV layer, giving `<out>.blp`. EMIT rather than DIFFUSE keeps metallic materials from baking black.
+
+     A glTF image × COLOR_0 multiply counts as an image when the vertex colors are white.
+     `blp.py` is a numpy JPEG encoder for BLP1. WC3 stores raw B,G,R,A bands with no YCbCr, so no stock encoder can produce it.
+     BLPs land next to the output MDX. Blender `img.pixels` are stored bottom-up, and shader colors are linear (convert them with `textures.srgb`);
    - renames actions to WC3 sequence names (Stand/Walk/Attack...), dropping `mixamo.com` duplicates;
    - calls `bpy.ops.export.mdl_exporter`.
+
+   Two branches matter here:
+   - **MDX/MDL input** is a round-trip. The height, rotation and grounding defaults turn off, and `--sequences auto` takes the importer's scene sequence list rather than the actions. Keep that path untouched when changing normalization.
+   - `--anim FILE` imports extra animation files and attaches their actions to the main armature, matched by bone name.
+
+   `convert.py` keeps its own `action_fcurves`, which yields `(channelbag, fcurve)` pairs. It does not import the addon's `utils.action_fcurves`, so a fix to one has to be made in the other too.
 3. **`mdl2mdx.js`** turns the MDL into binary MDX with mdx-m3-viewer (`MDX_VIEWER_DIR`).
 4. **`scripts/addons/export_mdl/`** is the addon, a Blender 5.x port of export_mdl 3.4. `deps/blender/portable/scripts/addons/export_mdl` is a symlink to it, and a system Blender gets `BLENDER_USER_SCRIPTS=scripts/`, so there is only one copy to edit.
    - Export runs `classes/model_utils/from_scene.py` → `War3Model` → MDL writer.
@@ -50,7 +65,7 @@ The intermediate files land in `work/test/`. Don't point `check.sh` at an input 
 - Bone groups are gone. Use bone collections plus `bone.color.palette` (`assign_node_type_group`).
 - Material and shader changes:
   - `blend_method` is gone; use `surface_render_method`. `shadow_method` is gone too.
-  - Principled BSDF sockets were renamed ("Specular IOR Level", "Emission Color"). Use the `set_input(node, names, value)` helper.
+  - Principled BSDF sockets were renamed ("Specular IOR Level", "Emission Color"). Use the `set_input(node, names, value)` helper. It is duplicated in `import_stuff/create_material.py` and `import_stuff/War3BpyMaterial.py`, so fix both.
   - `ShaderNodeSeparateRGB` became `SeparateColor`.
 - **The Python version differs.** The bundled Blender runs Python 3.13, which evaluates annotations eagerly. The Arch system Blender runs 3.14, which evaluates them lazily. A removed `bpy.types` name used in an annotation therefore crashes only the bundle, so test both: `--standalone` and the default.
 - `bpy.ops.export.*` always exists as an attribute, so it can't tell you whether the addon loaded. Check `hasattr(bpy.types.Material, "mdl_layers")` instead.

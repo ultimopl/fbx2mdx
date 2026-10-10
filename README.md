@@ -46,8 +46,95 @@ runs just print the `setup.sh` command and exit.
 Defaults:
 - Scales to 120 units tall, rotates 90° about Z (Blender -Y forward → WC3 +X), and puts the feet at Z=0. MDX/MDL input is left untouched.
 - Action names are mapped to WC3 names (`idle`→Stand, `run`→Walk, `attack`→Attack ...). Attack, Death, Spell and similar sequences are non-looping. A model with a single unnamed action gets `Stand`.
-- Textures are written as `war3mapImported\<image name>.blp`. Use `--texture` to set the path yourself.
+- Textures: every BLP the model references is written next to the output `.mdx`, under the in-game path `war3mapImported\<name>.blp` (`--texture-dir` changes the folder):
+  - Image textures, external or embedded in the .glb/.fbx, are converted as-is (`<image name>.blp`).
+  - Flat material colors and per-face vertex colors go into one small palette, `<model>_colors.blp`.
+  - Anything else (smooth vertex colors, procedural nodes, image × color mixes) is baked with Cycles onto a new UV layout, giving `<model>.blp`.
+
+  BLPs are JPEG BLP1 with mipmaps, at most `--texture-size` (512) per side, quality `--texture-quality` (90). Textures with alpha keep an 8-bit alpha channel.
+  `--no-textures` only writes the paths. `--texture PATH` uses one path for every material and writes nothing. `--no-vertex-colors` ignores color attributes the material doesn't use (FBX vertex colors are never wired, so by default they're multiplied by the base color).
 - Skinning: classic MDX averages a vertex's bones equally. Bones under 30% of the vertex's strongest weight are dropped (`--weight-cutoff`), with at most 4 bones per vertex (`--max-bones`). Geosets that exceed 256 bone groups or 65535 verts are split automatically.
+
+## Examples
+
+Paths are relative to `tools/fbx2mdx`.
+
+**A rigged, animated glTF.** The test unit has flat material colors and three Mixamo actions:
+
+```
+$ ./fbx2mdx ../../refs/test-unit/XBOT-ANIMATED.glb out/xbot.mdx
+[fbx2mdx] rest height 1.8092 -> scale 66.3264
+[fbx2mdx] final bounds [-10.64, -59.86, 0.0] [10.64, 59.86, 120.0]
+[fbx2mdx] material Beta_HighLimbsGeoSG3: flat
+[fbx2mdx] material Beta_Joints_MAT1: flat
+[fbx2mdx] texture xbot_colors.blp (32x32) -> war3mapImported\xbot_colors.blp
+[fbx2mdx] action attack -> Attack
+[fbx2mdx] action idle -> Stand
+[fbx2mdx] dropping action mixamo.com
+[fbx2mdx] action running -> Walk
+[mdl2mdx] wrote out/xbot.mdx
+```
+
+`out/` now holds `xbot.mdx` and `xbot_colors.blp`. The `material ...:` lines say how each material's color was turned into a texture:
+
+| Log | Source | Output |
+|---|---|---|
+| `image` | an image texture, external or embedded in the .glb/.fbx | `<image name>.blp` |
+| `flat` / `atlas` | a flat material color, or vertex colors that are uniform per face | `<model>_colors.blp`, shared |
+| `baked` | smooth vertex colors, procedural nodes, image × color | `<model>.blp`, rendered with Cycles |
+
+**A unit for the mod.** Write the model and its textures straight into `content/art`. Point the texture paths at the same folder so they match the in-game layout:
+
+```
+./fbx2mdx drone.glb ../../content/art/units/drone/drone.mdx --texture-dir 'units\drone'
+../../content/build_mpq.sh
+../../src/open-realm/build/bin/mdxtool -mpq ../../content/swarmqueen.mpq -model 'units\drone\drone.mdx' --info
+```
+
+**Animations kept in separate files** (the usual Mixamo export). Bone names must match. Each sequence is named after its file and then mapped to a WC3 name:
+
+```
+./fbx2mdx "X Bot.fbx" xbot.mdx --anim Idle.fbx --anim Running.fbx --anim "Zombie Attack.fbx"
+```
+
+**Size and orientation.** By default the model is scaled to 120 units and turned so Blender's front (-Y) faces WC3's +X. For a model that should stand 60 units tall and already faces +X:
+
+```
+./fbx2mdx boss.fbx boss.mdx --height 60 --rot 0,0,0
+./fbx2mdx prop.obj prop.mdx --height 0 --no-ground   # keep the imported size and position
+```
+
+**Textures:**
+
+```
+./fbx2mdx painted.glb painted.mdx --texture-size 1024              # bakes and images up to 1024 px (the color palette stays small)
+./fbx2mdx painted.glb painted.mdx --texture-quality 75             # smaller BLPs
+./fbx2mdx hero.fbx hero.mdx --no-vertex-colors                     # FBX has stray vertex colors; use the material color
+./fbx2mdx hero.fbx hero.mdx --texture 'units\hero\hero.blp'        # you made the BLP yourself; write nothing
+./fbx2mdx hero.fbx hero.mdx --no-textures                          # paths only, as before texture generation
+```
+
+**Sequences:**
+
+```
+./fbx2mdx hero.glb hero.mdx --keep-names                  # keep the original action names, no Stand/Walk/... mapping
+./fbx2mdx hero.glb hero.mdx --skip-action 'T-?Pose' --skip-action 'mixamo\.com'   # replaces the default mixamo.com filter, so repeat it
+```
+
+**Skinning that looks wrong.** Shoulders collapse, or vertices follow the wrong bone. Run the checker first, then lower the cutoff so more bones are kept:
+
+```
+tests/check.sh hero.fbx                                   # per-sequence vertex error, in WC3 units
+./fbx2mdx hero.fbx hero.mdx --weight-cutoff 0.15
+```
+
+**Batch, round-trip and hand edits:**
+
+```
+./fbx2mdx models/ out/                                    # every .fbx/.glb/.gltf/.obj/.dae in the folder
+./fbx2mdx old.mdx fixed.mdx                               # MDX in: no rescale, textures and sequences kept
+./fbx2mdx hero.glb hero.mdx --save-blend hero.blend && ./edit hero.blend
+```
 
 ## Edit by hand
 
@@ -67,7 +154,7 @@ compares WC3-rule skinning against Blender's deformation and prints the per-sequ
 
 ## Limitations
 
-- BLP textures are not converted. Convert the PNG yourself and put it at the printed path.
+- Generated textures are JPEG only (no paletted BLP), and baking needs Cycles (any Blender has it). Materials already set up with MDL layers, as in MDX/MDL round-trips, are left alone.
 - No real skin weights (v800 format), so heavily blended areas such as shoulders deform a little differently.
 - Root motion on the armature object is frozen. Only bone animation is exported.
 - Re-importing an MDX turns attachments and helpers into bones, and can add a small white collision geoset.

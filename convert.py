@@ -13,6 +13,9 @@ import addon_utils
 import bpy
 from mathutils import Matrix, Vector
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import textures  # noqa: E402  (needs the path above)
+
 ADDON = "export_mdl"
 
 # Blender action name (lowercase, first match wins) -> WC3 sequence name.
@@ -52,6 +55,13 @@ def parse_args():
                         "war3mapImported\\<image or output name>.blp)")
     p.add_argument("--texture-dir", default="war3mapImported",
                    help="in-game folder used for derived texture paths")
+    p.add_argument("--texture-size", type=int, default=512,
+                   help="max texture side in pixels (BLPs are power-of-two; also the bake size)")
+    p.add_argument("--texture-quality", type=int, default=90, help="JPEG quality of written BLPs")
+    p.add_argument("--no-textures", action="store_true",
+                   help="only write texture paths into the model, don't generate any BLP")
+    p.add_argument("--no-vertex-colors", action="store_true",
+                   help="ignore color attributes the material doesn't use (FBX importers never wire them)")
     p.add_argument("--keep-names", action="store_true",
                    help="keep action names instead of mapping them to WC3 sequence names")
     p.add_argument("--skip-action", action="append", default=[],
@@ -242,8 +252,8 @@ def image_of(material):
     return None
 
 
-def setup_materials(args, out_stem):
-    """Give every mesh a material whose single MDL layer points at a WC3 texture path."""
+def setup_materials(args, out_stem, out_dir):
+    """Give every mesh a material whose single MDL layer points at a WC3 texture, writing the BLPs to out_dir."""
     def wc3_path(stem):
         return "%s\\%s.blp" % (args.texture_dir, stem) if args.texture_dir else stem + ".blp"
 
@@ -258,20 +268,23 @@ def setup_materials(args, out_stem):
             if m is None:
                 obj.data.materials[i] = fallback
 
-    for mat in {m for o in bpy.context.scene.objects if o.type == 'MESH' for m in o.data.materials}:
-        if len(mat.mdl_layers):
-            continue  # already configured by hand in Blender
-        if args.texture:
-            path = args.texture
-        else:
-            img = image_of(mat)
-            stem = os.path.splitext(bpy.path.basename(img.filepath or img.name))[0] if img else out_stem
-            path = wc3_path(stem)
-        layer = mat.mdl_layers.add()
-        layer.name = "Layer 0"
-        layer.texture_type = '0'
-        layer.path = path
-        log("material %s -> %s" % (mat.name, path))
+    todo = {m for o in bpy.context.scene.objects if o.type == 'MESH' for m in o.data.materials
+            if not len(m.mdl_layers)}  # materials with layers were configured by hand in Blender
+    if args.texture or args.no_textures:
+        for mat in todo:
+            if args.texture:
+                path = args.texture
+            else:
+                img = image_of(mat)
+                stem = os.path.splitext(bpy.path.basename(img.filepath or img.name))[0] if img else out_stem
+                path = wc3_path(stem)
+            layer = mat.mdl_layers.add()
+            layer.name = "Layer 0"
+            layer.texture_type = '0'
+            layer.path = path
+            log("material %s -> %s" % (mat.name, path))
+    elif todo:
+        textures.build(args, todo, fallback, out_stem, out_dir, log)
 
 
 GENERIC_ACTION_PARTS = re.compile(
@@ -352,7 +365,7 @@ def main():
     log("imported", [(o.name, o.type) for o in bpy.context.scene.objects])
 
     normalize_transform(args)
-    setup_materials(args, out_stem)
+    setup_materials(args, out_stem, os.path.dirname(out))
     use_actions = args.sequences == "actions" or (
         args.sequences == "auto" and not len(bpy.context.scene.war3_mdl_sequences.mdl_sequences))
     log("sequences from", "actions" if use_actions else "scene sequence list")
